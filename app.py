@@ -95,6 +95,14 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "programs"] and parts[3] == "regions":
                 self.db.authorize_region(int(parts[2]), str(body.get("region", "")))
                 return self._json(201, {"ok": True})
+            if len(parts) == 4 and parts[:2] == ["api", "programs"] and parts[3] == "license":
+                conflicts = self.db.update_program_license(
+                    int(parts[2]), str(body.get("start_date", "")), str(body.get("end_date", "")),
+                    body.get("regions") or [],
+                )
+                if conflicts:
+                    return self._json(409, {"ok": False, "conflicts": conflicts})
+                return self._json(200, {"ok": True, "conflicts": []})
             self._json(404, {"ok": False, "error": "接口不存在"})
         except (DomainError, ValueError) as exc:
             self._json(400, {"ok": False, "error": str(exc)})

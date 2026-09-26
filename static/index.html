@@ -16,6 +16,11 @@ button{cursor:pointer;background:#16324f;color:white}pre{white-space:pre-wrap;ma
 <input id="duration" type="number" value="30" placeholder="分钟"><input id="start" value="2026-01-01"><input id="end" value="2026-12-31">
 <input id="region" value="华东"><input id="sponsor" placeholder="赞助商，可空"><input id="cooldown" type="number" value="0" placeholder="冷却分钟">
 </div><button onclick="addProgram()">创建并授权地区</button></section>
+<section><h2>调整节目授权（收窄窗口 / 地区）</h2><div class="grid">
+<select id="licpid" onchange="prefillLicense()"></select>
+<input id="licstart" placeholder="新开始日期 YYYY-MM-DD"><input id="licend" placeholder="新结束日期 YYYY-MM-DD">
+<input id="licregions" placeholder="新授权地区，逗号分隔，如 华东,华北">
+</div><button onclick="changeLicense()">提交授权变更</button><pre id="licresult"></pre></section>
 <section><h2>排期 / 替换 / 实播对账</h2>
 <div class="grid"><input id="airdate" value="2026-09-28"><input id="starttime" value="12:00"><input id="pid" type="number" placeholder="节目 ID">
 <input id="sid" type="number" placeholder="排期 ID"><input id="newpid" type="number" placeholder="替换节目 ID"><input id="actualstart" value="12:00">
@@ -24,7 +29,30 @@ button{cursor:pointer;background:#16324f;color:white}pre{white-space:pre-wrap;ma
 <script>
 const api=async(url,body)=>{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();out(j);return j};
 const out=x=>document.querySelector('#result').textContent=JSON.stringify(x,null,2);
-async function load(){document.querySelector('#state').textContent=JSON.stringify(await (await fetch('/api/state')).json(),null,2)}
+let programs=[];
+async function load(){
+  const s=await (await fetch('/api/state')).json();
+  programs=s.programs;
+  document.querySelector('#state').textContent=JSON.stringify(s,null,2);
+  const sel=document.querySelector('#licpid'),cur=sel.value;
+  sel.innerHTML=programs.map(p=>`<option value="${p.id}">#${p.id} ${p.title}（${p.start_date}~${p.end_date} ${p.regions.join('/')}）</option>`).join('');
+  if(cur&&programs.some(p=>p.id==cur))sel.value=cur;
+  prefillLicense();
+}
+function prefillLicense(){
+  const p=programs.find(p=>p.id==document.querySelector('#licpid').value);
+  if(!p)return;
+  licstart.value=p.start_date;licend.value=p.end_date;licregions.value=p.regions.join(',');
+}
+async function changeLicense(){
+  const r=await fetch('/api/programs/'+licpid.value+'/license',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({start_date:licstart.value,end_date:licend.value,regions:licregions.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean)})});
+  const j=await r.json();
+  document.querySelector('#licresult').textContent=j.ok
+    ?'✔ 校验通过，授权窗口与地区已更新。已登记实播的排期保持不变。'
+    :'✘ 存在冲突，改动未保存，请先修正以下排期：\n'+j.conflicts.map(c=>`· ${c.air_date} 排期 #${c.slot_id}：${c.reason}`).join('\n');
+  load();
+}
 function addProgram(){api('/api/programs',{title:title.value,kind:kind.value,duration_minutes:+duration.value,start_date:start.value,end_date:end.value,region:region.value,regions:[region.value],sponsor:sponsor.value||null,cooldown_minutes:+cooldown.value})}
 function schedule(){api('/api/schedule',{air_date:airdate.value,start_time:starttime.value,program_id:+pid.value,region:region.value})}
 function replace(){api('/api/slots/'+sid.value+'/replace',{new_program_id:+newpid.value})}

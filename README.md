@@ -29,6 +29,7 @@ python -m unittest discover -s tests -v
 - `GET /api/state`：节目、排期和最近对账异常
 - `POST /api/programs`：创建节目并授权地区
 - `POST /api/programs/{id}/regions`：追加地区授权
+- `POST /api/programs/{id}/license`：收窄授权窗口与地区。仅当"无实播记录且状态为 planned/replaced"的排期全部落在新窗口和新地区内时才保存；否则返回 409 和逐条冲突（日期、排期编号、原因），已登记实播的排期保留且不参与校验
 - `POST /api/schedule`：创建排期
 - `POST /api/slots/{id}/replace`：替换计划节目并重新校验
 - `POST /api/playout`：登记实播记录
