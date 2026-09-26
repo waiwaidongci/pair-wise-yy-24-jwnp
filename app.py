@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from database import DomainError, RadioDB
+from database import DomainError, LicenseConflict, RadioDB
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = os.environ.get("RADIO_DB", str(BASE / "radio.db"))
@@ -95,7 +95,15 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "programs"] and parts[3] == "regions":
                 self.db.authorize_region(int(parts[2]), str(body.get("region", "")))
                 return self._json(201, {"ok": True})
+            if len(parts) == 4 and parts[:2] == ["api", "programs"] and parts[3] == "license":
+                program = self.db.update_program_license(
+                    int(parts[2]), str(body.get("start_date", "")), str(body.get("end_date", "")),
+                    body.get("regions") or [],
+                )
+                return self._json(200, {"ok": True, "program": program})
             self._json(404, {"ok": False, "error": "接口不存在"})
+        except LicenseConflict as exc:
+            self._json(409, {"ok": False, "error": str(exc), "conflicts": exc.conflicts})
         except (DomainError, ValueError) as exc:
             self._json(400, {"ok": False, "error": str(exc)})
 

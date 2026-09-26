@@ -11,6 +11,15 @@ class DomainError(ValueError):
     """A business-rule violation that should be shown to the API caller."""
 
 
+class LicenseConflict(DomainError):
+    """Narrowing a license would leave unplayed planned/replaced slots outside
+    the new window. Carries the per-slot conflict list for operators."""
+
+    def __init__(self, conflicts: list[dict]) -> None:
+        self.conflicts = conflicts
+        super().__init__(f"有 {len(conflicts)} 条未实播排期会落到新授权窗口外，授权未修改")
+
+
 PROGRAM_KINDS = {"music", "ad", "talk", "live"}
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -171,6 +180,81 @@ class RadioDB:
             if not self.conn.execute("SELECT 1 FROM programs WHERE id=?", (program_id,)).fetchone():
                 raise DomainError("节目不存在")
             self.conn.execute("INSERT OR IGNORE INTO program_regions(program_id,region) VALUES(?,?)", (program_id, region.strip()))
+
+    def update_program_license(self, program_id: int, start_date: str, end_date: str,
+                               regions: list[str]) -> dict:
+        """Narrow or move a program's license window and authorized regions.
+
+        Planned/replaced slots without any playout log must all fall inside the
+        new window and stay authorized; otherwise nothing is saved and a
+        LicenseConflict carrying the offending slot list is raised. Slots that
+        already aired are left untouched, as are cancelled slots.
+        """
+        try:
+            new_start = datetime.strptime(start_date, "%Y-%m-%d").date().isoformat()
+            new_end = datetime.strptime(end_date, "%Y-%m-%d").date().isoformat()
+        except ValueError as exc:
+            raise DomainError("日期必须使用 YYYY-MM-DD") from exc
+        if new_end < new_start:
+            raise DomainError("授权结束日期不能早于开始日期")
+        clean_regions = [r.strip() for r in regions if r.strip()]
+        if not clean_regions:
+            raise DomainError("授权地区不能为空")
+        if len(set(clean_regions)) != len(clean_regions):
+            raise DomainError("授权地区不能重复")
+        with self.transaction():
+            program = self.conn.execute("SELECT * FROM programs WHERE id=?", (program_id,)).fetchone()
+            if not program:
+                raise DomainError("节目不存在")
+            conflicts: list[dict] = []
+            pending = self.conn.execute(
+                "SELECT * FROM slots WHERE program_id=? AND status IN ('planned','replaced') "
+                "ORDER BY air_date,start_time,id",
+                (program_id,),
+            ).fetchall()
+            for slot in pending:
+                if self.conn.execute(
+                    "SELECT 1 FROM playout_logs WHERE slot_id=? LIMIT 1", (slot["id"],)
+                ).fetchone():
+                    continue
+                reasons = []
+                if not (new_start <= slot["air_date"] <= new_end):
+                    if slot["air_date"] < new_start:
+                        reasons.append(f"播出日期 {slot['air_date']} 早于新授权开始日期 {new_start}")
+                    else:
+                        reasons.append(f"播出日期 {slot['air_date']} 晚于新授权结束日期 {new_end}")
+                if slot["region"] not in clean_regions:
+                    reasons.append(f"地区 {slot['region']} 已不在新授权地区列表中")
+                if reasons:
+                    conflicts.append({
+                        "slot_id": slot["id"],
+                        "air_date": slot["air_date"],
+                        "start_time": slot["start_time"],
+                        "region": slot["region"],
+                        "reason": "；".join(reasons),
+                    })
+            if conflicts:
+                raise LicenseConflict(conflicts)
+            self.conn.execute(
+                "UPDATE programs SET start_date=?, end_date=? WHERE id=?",
+                (new_start, new_end, program_id),
+            )
+            self.conn.execute("DELETE FROM program_regions WHERE program_id=?", (program_id,))
+            self.conn.executemany(
+                "INSERT INTO program_regions(program_id,region) VALUES(?,?)",
+                [(program_id, region) for region in clean_regions],
+            )
+        return self.get_program(program_id)
+
+    def get_program(self, program_id: int) -> dict:
+        row = self.conn.execute("SELECT * FROM programs WHERE id=?", (program_id,)).fetchone()
+        if not row:
+            raise DomainError("节目不存在")
+        program = dict(row)
+        program["regions"] = [r["region"] for r in self.conn.execute(
+            "SELECT region FROM program_regions WHERE program_id=? ORDER BY region", (program_id,)
+        ).fetchall()]
+        return program
 
     def add_sponsor_policy(self, sponsor: str, min_gap_minutes: int) -> None:
         if not sponsor.strip() or min_gap_minutes < 0:
@@ -357,7 +441,9 @@ class RadioDB:
         ).fetchall()]
 
     def snapshot(self) -> dict:
-        programs = [dict(row) for row in self.conn.execute("SELECT * FROM programs ORDER BY id").fetchall()]
+        programs = [self.get_program(row["id"]) for row in self.conn.execute(
+            "SELECT id FROM programs ORDER BY id"
+        ).fetchall()]
         slots = [dict(row) for row in self.conn.execute(
             "SELECT s.*, p.title, p.kind FROM slots s JOIN programs p ON p.id=s.program_id ORDER BY s.air_date,s.start_time"
         ).fetchall()]

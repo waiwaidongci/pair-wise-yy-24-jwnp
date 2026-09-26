@@ -8,9 +8,19 @@ section{background:white;padding:16px;margin:12px 0;border:1px solid #ddd;border
 input,select,button{padding:7px;margin:3px;border:1px solid #bbb;border-radius:6px}
 button{cursor:pointer;background:#16324f;color:white}pre{white-space:pre-wrap;max-height:360px;overflow:auto}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.grid input{width:90%}
+.ok{color:#0a6b2c;font-weight:600}.bad{color:#b3261e;font-weight:600}
+table{border-collapse:collapse;width:100%;margin-top:8px}th,td{border:1px solid #ccc;padding:5px 8px;text-align:left}th{background:#f0f0ee}
 </style>
 <h1>电台播出与版权窗口排程</h1>
 <section><h2>当前计划</h2><button onclick="load()">刷新</button><pre id="state"></pre></section>
+<section><h2>收窄节目授权（地区 / 起止日期）</h2>
+<p>提交前会先检查该节目下<strong>没有实播记录、仍为计划或替换状态</strong>的排期；只要有一条落到新窗口外，本次修改不会保存，已实播的排期不受影响、继续保留。</p>
+<div class="grid">
+<select id="licensepid" onchange="fillLicense()"><option value="">选择节目…</option></select>
+<input id="licensestart" placeholder="新开始日期 YYYY-MM-DD"><input id="licenseend" placeholder="新结束日期 YYYY-MM-DD">
+<input id="licenseregions" placeholder="新授权地区，逗号分隔，如：华东,华南">
+</div><button onclick="updateLicense()">检查并提交</button>
+<div id="licenseresult"></div></section>
 <section><h2>新建节目</h2><div class="grid">
 <input id="title" placeholder="节目名"><select id="kind"><option>music</option><option>ad</option><option>talk</option><option>live</option></select>
 <input id="duration" type="number" value="30" placeholder="分钟"><input id="start" value="2026-01-01"><input id="end" value="2026-12-31">
@@ -30,6 +40,33 @@ function schedule(){api('/api/schedule',{air_date:airdate.value,start_time:start
 function replace(){api('/api/slots/'+sid.value+'/replace',{new_program_id:+newpid.value})}
 function playout(){api('/api/playout',{slot_id:+sid.value,actual_start:actualstart.value,actual_duration_minutes:+actualduration.value,actual_program_id:actualpid.value?+actualpid.value:null})}
 function reconcile(){api('/api/reconcile',{date:airdate.value})}
+async function load(){
+  const s=await (await fetch('/api/state')).json();
+  document.querySelector('#state').textContent=JSON.stringify(s,null,2);
+  const sel=document.querySelector('#licensepid');
+  sel.innerHTML='<option value="">选择节目…</option>'+s.programs.map(p=>`<option value="${p.id}">#${p.id} ${p.title}（${p.regions.join('、')} ${p.start_date} ~ ${p.end_date}）</option>`).join('');
+}
+function fillLicense(){
+  const p=JSON.parse(document.querySelector('#state').textContent).programs.find(x=>x.id===+licensepid.value);
+  if(p){licensestart.value=p.start_date;licenseend.value=p.end_date;licenseregions.value=p.regions.join(',')}
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+async function updateLicense(){
+  const box=document.querySelector('#licenseresult');
+  const regions=licenseregions.value.split(',').map(x=>x.trim()).filter(Boolean);
+  const r=await fetch('/api/programs/'+licensepid.value+'/license',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start_date:licensestart.value,end_date:licenseend.value,regions})});
+  const j=await r.json();
+  if(j.ok){
+    box.innerHTML='<p class="ok">✓ 全部排期合规，节目授权已更新。</p><pre>'+esc(JSON.stringify(j.program,null,2))+'</pre>';
+  }else if(j.conflicts){
+    box.innerHTML='<p class="bad">✗ '+esc(j.error)+'，请先修正以下排期后再提交：</p>'
+      +'<table><tr><th>播出日期</th><th>开始时间</th><th>排期编号</th><th>地区</th><th>原因</th></tr>'
+      +j.conflicts.map(c=>`<tr><td>${esc(c.air_date)}</td><td>${esc(c.start_time)}</td><td>#${c.slot_id}</td><td>${esc(c.region)}</td><td>${esc(c.reason)}</td></tr>`).join('')
+      +'</table>';
+  }else{
+    box.innerHTML='<p class="bad">✗ '+esc(j.error||'提交失败')+'</p>';
+  }
+}
 load();
 </script>
 </html>
